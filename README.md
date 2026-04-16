@@ -46,22 +46,29 @@ raw_specs (JSON), llm_normalized, scraped_at
 
 ## Setup
 
+Clone the repo anywhere you like — the code doesn't assume a particular
+location. Wherever you clone it, substitute that path for `<REPO>` below.
+
 ```bash
-cd ~/pbtech-shopping
+cd <REPO>                                # e.g. ~/OpenSource/pbtech-shopping
 pip install -r requirements.txt
 export OPENROUTER_API_KEY=sk-or-v1-...   # optional; stage 4 is a no-op without it
 ```
 
+The session database lives at `~/.cache/pbtech/session.db` regardless of where
+the repo is cloned.
+
 ### Claude Desktop config
 
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json`,
+replacing `<REPO>` with the absolute path to your clone:
 
 ```json
 {
   "mcpServers": {
     "pbtech-shopping": {
       "command": "python3",
-      "args": ["/Users/sidney/pbtech-shopping/server.py"],
+      "args": ["<REPO>/server.py"],
       "env": {
         "OPENROUTER_API_KEY": "sk-or-v1-..."
       }
