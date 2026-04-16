@@ -22,11 +22,7 @@ from normalizer import normalize_product, spec_coverage, needs_llm, apply_llm_fa
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("pbtech-shopping")
 
-mcp = FastMCP(
-    "pbtech-shopping",
-    version="0.1.0",
-)
-
+mcp = FastMCP("pbtech-shopping")
 
 @mcp.tool()
 def pbtech_scrape(category_url: str, extractor_json: str) -> str:
