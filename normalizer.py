@@ -67,17 +67,20 @@ def detect_category(url: str) -> str:
 # Stage 1: Regex on title + subtitle
 # ---------------------------------------------------------------------------
 
-def _stage_regex(row: dict, text: str):
-    """Extract specs from title/subtitle via regex."""
+def _stage_regex(row: dict, text: str, category: str):
+    """Extract specs from title/subtitle via regex. Category-gated so that
+    monitor-only patterns (Hz, resolution, inches) don't leak into cable rows
+    when a cable's marketing copy mentions e.g. "8K 60Hz"."""
     t = text.lower()
 
-    # Gbps: "40gbps", "40 gbps", "40gb/s"
+    # Gbps: "40gbps", "40 gbps", "40gb/s" — meaningful for both categories
     if row.get("gbps") is None:
         m = re.search(r'(\d+(?:\.\d+)?)\s*(?:gbps|gb/s)', t)
         if m:
             row["gbps"] = float(m.group(1))
 
-    # Watts: "100w", "100 watt", "240w"
+    # Watts: "100w", "100 watt", "240w" — meaningful for both (cable PD rating
+    # and monitor USB-C PD output are both legitimate uses of max_watts)
     if row.get("max_watts") is None:
         m = re.search(r'(\d+)\s*(?:w(?:att)?s?)\b', t)
         if m:
@@ -89,38 +92,40 @@ def _stage_regex(row: dict, text: str):
         if m:
             row["max_watts"] = float(m.group(1))
 
-    # Length: "1m", "1.5m", "2 metre", "0.5 meter"
-    if row.get("length_m") is None:
-        m = re.search(r'(\d+(?:\.\d+)?)\s*(?:m(?:etre|eter)?s?)\b', t)
-        if m:
-            val = float(m.group(1))
-            if val < 50:  # sanity: avoid matching model numbers
-                row["length_m"] = val
+    if category == "cables":
+        # Length: "1m", "1.5m", "2 metre", "0.5 meter"
+        if row.get("length_m") is None:
+            m = re.search(r'(\d+(?:\.\d+)?)\s*(?:m(?:etre|eter)?s?)\b', t)
+            if m:
+                val = float(m.group(1))
+                if val < 50:  # sanity: avoid matching model numbers
+                    row["length_m"] = val
 
-    # Length in cm: "50cm"
-    if row.get("length_m") is None:
-        m = re.search(r'(\d+)\s*cm\b', t)
-        if m:
-            row["length_m"] = float(m.group(1)) / 100
+        # Length in cm: "50cm"
+        if row.get("length_m") is None:
+            m = re.search(r'(\d+)\s*cm\b', t)
+            if m:
+                row["length_m"] = float(m.group(1)) / 100
 
-    # Resolution: "3840x2160", "2560 x 1440", "5120x2880"
-    if row.get("resolution_w") is None:
-        m = re.search(r'(\d{3,5})\s*x\s*(\d{3,5})', t)
-        if m:
-            row["resolution_w"] = int(m.group(1))
-            row["resolution_h"] = int(m.group(2))
+    if category == "monitors":
+        # Resolution: "3840x2160", "2560 x 1440", "5120x2880"
+        if row.get("resolution_w") is None:
+            m = re.search(r'(\d{3,5})\s*x\s*(\d{3,5})', t)
+            if m:
+                row["resolution_w"] = int(m.group(1))
+                row["resolution_h"] = int(m.group(2))
 
-    # Refresh rate: "165hz", "144 hz", "60hz"
-    if row.get("refresh_hz") is None:
-        m = re.search(r'(\d+)\s*hz', t)
-        if m:
-            row["refresh_hz"] = int(m.group(1))
+        # Refresh rate: "165hz", "144 hz", "60hz"
+        if row.get("refresh_hz") is None:
+            m = re.search(r'(\d+)\s*hz', t)
+            if m:
+                row["refresh_hz"] = int(m.group(1))
 
-    # Screen size: '27"', "27 inch", '31.5"'
-    if row.get("screen_inches") is None:
-        m = re.search(r'(\d+(?:\.\d+)?)\s*(?:"|inch|")', t)
-        if m:
-            row["screen_inches"] = float(m.group(1))
+        # Screen size: '27"', "27 inch", '31.5"'
+        if row.get("screen_inches") is None:
+            m = re.search(r'(\d+(?:\.\d+)?)\s*(?:"|inch|")', t)
+            if m:
+                row["screen_inches"] = float(m.group(1))
 
 
 # ---------------------------------------------------------------------------
@@ -134,78 +139,83 @@ _HZ_RE = re.compile(r'(\d+)\s*(?:hz)', re.I)
 _INCHES_RE = re.compile(r'(\d+(?:\.\d+)?)')
 
 
-def _stage_spec_rows(row: dict, specs: dict):
-    """Extract from the extractor's spec rows dict."""
+def _stage_spec_rows(row: dict, specs: dict, category: str):
+    """Extract from the extractor's spec rows dict. Category-gated."""
     if not specs:
         return
 
-    # Cable Length
-    if row.get("length_m") is None:
-        for key in ("Cable Length", "Length", "Cable length"):
-            val = specs.get(key, "")
+    if category == "cables":
+        # Cable Length
+        if row.get("length_m") is None:
+            for key in ("Cable Length", "Length", "Cable length"):
+                val = specs.get(key, "")
+                if val:
+                    m = _LENGTH_RE.search(val)
+                    if m:
+                        v = float(m.group(1))
+                        if v < 50:
+                            row["length_m"] = v
+                        break
+                    m = _LENGTH_CM_RE.search(val)
+                    if m:
+                        row["length_m"] = float(m.group(1)) / 100
+                        break
+
+        # Connectors
+        if row.get("conn1") is None:
+            val = specs.get("Connector 1", specs.get("Connector Type 1", ""))
             if val:
-                m = _LENGTH_RE.search(val)
+                row["conn1"] = val.strip()
+
+        if row.get("conn2") is None:
+            val = specs.get("Connector 2", specs.get("Connector Type 2", ""))
+            if val:
+                row["conn2"] = val.strip()
+
+        # Braided — exact-word match. Previously "no" in val caught "Not Specified"
+        # as braided=0 because "no" is a substring of "not". Fix: compare the
+        # trimmed lowercase value against the literal tokens yes/no.
+        if row.get("braided") is None:
+            val = specs.get("Braided", "").strip().lower()
+            if val == "yes":
+                row["braided"] = 1
+            elif val == "no":
+                row["braided"] = 0
+            # Any other value (including "Not Specified", "") leaves braided as None.
+
+    if category == "monitors":
+        # Monitor: Screen Size
+        if row.get("screen_inches") is None:
+            val = specs.get("Screen Size", specs.get("Display Size", ""))
+            if val:
+                m = _INCHES_RE.search(val)
                 if m:
                     v = float(m.group(1))
-                    if v < 50:
-                        row["length_m"] = v
-                    break
-                m = _LENGTH_CM_RE.search(val)
+                    if 10 <= v <= 100:
+                        row["screen_inches"] = v
+
+        # Monitor: Resolution
+        if row.get("resolution_w") is None:
+            val = specs.get("Resolution", specs.get("Native Resolution", ""))
+            if val:
+                m = _RES_RE.search(val)
                 if m:
-                    row["length_m"] = float(m.group(1)) / 100
-                    break
+                    row["resolution_w"] = int(m.group(1))
+                    row["resolution_h"] = int(m.group(2))
 
-    # Connectors
-    if row.get("conn1") is None:
-        val = specs.get("Connector 1", specs.get("Connector Type 1", ""))
-        if val:
-            row["conn1"] = val.strip()
+        # Monitor: Refresh Rate
+        if row.get("refresh_hz") is None:
+            val = specs.get("Refresh Rate", specs.get("Max Refresh Rate", ""))
+            if val:
+                m = _HZ_RE.search(val)
+                if m:
+                    row["refresh_hz"] = int(m.group(1))
 
-    if row.get("conn2") is None:
-        val = specs.get("Connector 2", specs.get("Connector Type 2", ""))
-        if val:
-            row["conn2"] = val.strip()
-
-    # Braided
-    if row.get("braided") is None:
-        val = specs.get("Braided", "").lower()
-        if "yes" in val:
-            row["braided"] = 1
-        elif "no" in val:
-            row["braided"] = 0
-
-    # Monitor: Screen Size
-    if row.get("screen_inches") is None:
-        val = specs.get("Screen Size", specs.get("Display Size", ""))
-        if val:
-            m = _INCHES_RE.search(val)
-            if m:
-                v = float(m.group(1))
-                if 10 <= v <= 100:
-                    row["screen_inches"] = v
-
-    # Monitor: Resolution
-    if row.get("resolution_w") is None:
-        val = specs.get("Resolution", specs.get("Native Resolution", ""))
-        if val:
-            m = _RES_RE.search(val)
-            if m:
-                row["resolution_w"] = int(m.group(1))
-                row["resolution_h"] = int(m.group(2))
-
-    # Monitor: Refresh Rate
-    if row.get("refresh_hz") is None:
-        val = specs.get("Refresh Rate", specs.get("Max Refresh Rate", ""))
-        if val:
-            m = _HZ_RE.search(val)
-            if m:
-                row["refresh_hz"] = int(m.group(1))
-
-    # Monitor: Panel Type
-    if row.get("panel_type") is None:
-        val = specs.get("Panel Type", specs.get("Panel", ""))
-        if val:
-            row["panel_type"] = val.strip()
+        # Monitor: Panel Type
+        if row.get("panel_type") is None:
+            val = specs.get("Panel Type", specs.get("Panel", ""))
+            if val:
+                row["panel_type"] = val.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -282,12 +292,13 @@ def normalize_product(product: dict, category_url: str) -> dict:
     }
 
     # Stage 1: regex on title + subtitle
-    _stage_regex(row, f"{title} {subtitle}")
+    _stage_regex(row, f"{title} {subtitle}", category)
 
     # Stage 2: structured spec rows
-    _stage_spec_rows(row, specs)
+    _stage_spec_rows(row, specs, category)
 
-    # Stage 3: spec table lookup
+    # Stage 3: spec table lookup (category-agnostic — gbps/W from standards
+    # apply to both cable capability and monitor USB-C port capability)
     _stage_spec_table(row, combined_text)
 
     return row
