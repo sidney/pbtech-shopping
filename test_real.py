@@ -19,7 +19,8 @@ from normalizer import (
 
 
 def main():
-    dump = json.loads(Path("fixture_tb_cables_2026-04-16.json").read_text())
+    fixture_path = sys.argv[1] if len(sys.argv) > 1 else "fixture_tb_cables_2026-04-16.json"
+    dump = json.loads(Path(fixture_path).read_text())
     category_url = dump["url"]
     category = detect_category(category_url)
 

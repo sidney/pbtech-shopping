@@ -17,7 +17,7 @@ from mcp.server.fastmcp import FastMCP
 
 from db import get_connection, upsert_product, run_query, format_query_result
 from db import reset_db, session_stats
-from normalizer import normalize_product, spec_coverage, needs_llm
+from normalizer import normalize_product, spec_coverage, needs_llm, apply_llm_fallback
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("pbtech-shopping")
@@ -35,7 +35,8 @@ def pbtech_scrape(category_url: str, extractor_json: str) -> str:
     Workflow: (1) navigate to category_url in Playwright MCP, (2) run the
     extractor JS via browser_run_code or browser_evaluate, (3) pass the
     resulting JSON string here. This tool normalizes specs (regex, spec rows,
-    standards lookup) and inserts into the session SQLite database.
+    standards lookup, and LLM fallback for stragglers) and inserts into the
+    session SQLite database.
 
     Args:
         category_url: The PB Tech category URL that was scraped (used for
@@ -56,11 +57,17 @@ def pbtech_scrape(category_url: str, extractor_json: str) -> str:
     if not products:
         return "No products in extractor output."
 
-    # Normalize all products
+    # Normalize all products (stages 1-3)
     normalized = []
     for p in products:
         row = normalize_product(p, category_url)
         normalized.append(row)
+
+    # Stage 4: LLM fallback for any rows still missing required fields.
+    # No-op if OPENROUTER_API_KEY isn't set (logged, not raised).
+    from normalizer import detect_category
+    category = detect_category(category_url)
+    llm_stats = apply_llm_fallback(normalized, category)
 
     # Insert into DB
     conn = get_connection()
@@ -71,9 +78,7 @@ def pbtech_scrape(category_url: str, extractor_json: str) -> str:
     finally:
         conn.close()
 
-    # Build response: count, spec coverage, LLM stragglers, session total
-    from normalizer import detect_category
-    category = detect_category(category_url)
+    # Post-stage-4 coverage and remaining stragglers
     coverage = spec_coverage(normalized, category)
     stragglers = needs_llm(normalized, category)
 
@@ -91,9 +96,23 @@ def pbtech_scrape(category_url: str, extractor_json: str) -> str:
     lines = [
         f"Ingested {len(normalized)} products ({category}).{pag}",
         f"Spec coverage: {json.dumps(coverage)}" if coverage else "No required fields for this category.",
-        f"LLM fallback needed: {len(stragglers)} rows" if stragglers else "All required fields populated.",
-        f"Session DB total: {stats['total_products']} products across {len(stats['by_category'])} categories.",
     ]
+    if llm_stats["attempted"] > 0:
+        lines.append(
+            f"LLM fallback: called on {llm_stats['attempted']} row(s), "
+            f"fully resolved {llm_stats['filled']}."
+        )
+    if stragglers:
+        lines.append(
+            f"Still missing required fields: {len(stragglers)} row(s). "
+            f"These rows have NULLs in the DB."
+        )
+    else:
+        lines.append("All required fields populated.")
+    lines.append(
+        f"Session DB total: {stats['total_products']} products across "
+        f"{len(stats['by_category'])} categories."
+    )
 
     # List spec fields seen (helps Claude know what to filter on)
     fields = data.get("spec_fields_seen", [])

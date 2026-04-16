@@ -79,6 +79,13 @@ def _stage_regex(row: dict, text: str, category: str):
         if m:
             row["gbps"] = float(m.group(1))
 
+    # Mbps: "480mbps" → 0.48 Gbps. UGREEN 50997 advertises 480Mbps in its
+    # subtitle (a USB 2.0 speed). Only fires if Gbps regex didn't match.
+    if row.get("gbps") is None:
+        m = re.search(r'(\d+(?:\.\d+)?)\s*(?:mbps|mb/s)', t)
+        if m:
+            row["gbps"] = float(m.group(1)) / 1000
+
     # Watts: "100w", "100 watt", "240w" — meaningful for both (cable PD rating
     # and monitor USB-C PD output are both legitimate uses of max_watts)
     if row.get("max_watts") is None:
@@ -226,6 +233,10 @@ def _stage_spec_table(row: dict, text: str):
     """Look up known standards in title/subtitle/spec text to fill gaps."""
     t = text.lower()
 
+    # Normalize "gen2" / "gen  2" to "gen 2" so UGREEN's "USB 3.2 Gen2"
+    # matches the TB_STANDARDS key "usb 3.2 gen 2".
+    t = re.sub(r'gen\s*(\d)', r'gen \1', t)
+
     # Try each standard, longest-match first (sorted by key length desc)
     for standard, values in sorted(TB_STANDARDS.items(), key=lambda x: -len(x[0])):
         if standard in t:
@@ -237,17 +248,186 @@ def _stage_spec_table(row: dict, text: str):
 
 
 # ---------------------------------------------------------------------------
-# Stage 4: LLM fallback (stub — implemented in step 3 of build)
+# Stage 4: LLM fallback (gpt-4o-mini via OpenRouter)
 # ---------------------------------------------------------------------------
+#
+# Only called for rows still missing required fields after stages 1-3.
+# Uses urllib (stdlib, no new dependency) to POST to OpenRouter.
+#
+# Keep the HTTP transport pluggable so tests can monkeypatch `_call_openrouter`
+# and so a different provider could be swapped in without touching callers.
+#
 
-async def _stage_llm_fallback(row: dict, category: str) -> bool:
-    """
-    Call gpt-4o-mini to extract remaining required fields.
-    Returns True if the LLM was called, False if skipped.
+import logging
+import os
+import urllib.error
+import urllib.request
 
-    TODO: Implement in build step 3.
+log = logging.getLogger(__name__)
+
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_MODEL = "openai/gpt-4o-mini"
+LLM_TIMEOUT_SEC = 15
+
+
+# Field meanings for the prompt. Kept terse because gpt-4o-mini follows short
+# constraints well and token economy matters (~$0.0001/row budget per the design).
+_FIELD_HELP = {
+    "gbps": (
+        "USB/TB data rate in Gbps (float). Reference: USB 2.0=0.48, "
+        "USB 3.0/3.1 Gen1=5, USB 3.1/3.2 Gen2=10, USB 3.2 Gen2x2=20, "
+        "USB4/TB3/TB4=40, TB5=80, DisplayPort 1.4=32.4."
+    ),
+    "max_watts": "Max PD wattage (float).",
+    "length_m": "Cable length in metres (float).",
+    "resolution_w": "Monitor horizontal pixel count (int).",
+    "resolution_h": "Monitor vertical pixel count (int).",
+    "refresh_hz": "Monitor refresh rate in Hz (int).",
+    "screen_inches": "Monitor diagonal screen size in inches (float).",
+}
+
+
+def _build_llm_prompt(row: dict, category: str, missing: list[str]) -> str:
+    """Build the gpt-4o-mini prompt for a single straggler row."""
+    title = row.get("title") or ""
+    subtitle = row.get("subtitle") or ""
+    specs = row.get("raw_specs") or "{}"
+    field_help = "\n".join(f"  {f}: {_FIELD_HELP.get(f, '')}" for f in missing)
+    return (
+        "Extract missing PB Tech product specs. Respond with JSON only, no prose.\n\n"
+        f"Category: {category}\n"
+        f"Title: {title}\n"
+        f"Subtitle: {subtitle}\n"
+        f"Specs: {specs}\n\n"
+        f"Fields to extract: {json.dumps(missing)}\n"
+        f"{field_help}\n\n"
+        "Heuristic for gbps on USB-C cables: a cable advertised purely for "
+        'charging ("fast charge", "PD", high-W rating) with no data rate or '
+        "USB version mentioned is conventionally USB 2.0 (gbps=0.48). "
+        "Otherwise, return null for any field you cannot determine confidently. "
+        "Do not guess data rates that are not supported by the text."
+    )
+
+
+def _call_openrouter(api_key: str, prompt: str) -> str:
+    """POST to OpenRouter chat/completions, return the assistant message text.
+
+    Tests should monkeypatch this with a fake that returns a canned JSON string.
     """
-    return False
+    body = json.dumps({
+        "model": OPENROUTER_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        OPENROUTER_URL,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=LLM_TIMEOUT_SEC) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    return payload["choices"][0]["message"]["content"]
+
+
+def _coerce(field: str, val):
+    """Coerce a raw LLM value to the type this field expects. Returns None on
+    any mismatch so bad output gets silently dropped rather than corrupting
+    the DB row."""
+    if val is None:
+        return None
+    try:
+        if field in ("resolution_w", "resolution_h", "refresh_hz"):
+            return int(val)
+        # Every other numeric field is a float
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def _stage_llm_fallback(row: dict, category: str) -> bool:
+    """Fill missing required fields for this row via gpt-4o-mini.
+
+    Returns True iff the LLM was called (row may or may not have changed).
+    Returns False if: no missing fields, no API key set, or the call failed.
+    The row is mutated in place; callers do not need a return value for that.
+    """
+    required = REQUIRED_FIELDS.get(category, [])
+    missing = [f for f in required if row.get(f) is None]
+    if not missing:
+        return False
+
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        return False
+
+    prompt = _build_llm_prompt(row, category, missing)
+    try:
+        content = _call_openrouter(api_key, prompt)
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
+        log.warning("Stage 4 HTTP failure for %s: %s", row.get("part"), e)
+        return True  # We tried; don't mark as success but do count the call
+    except Exception as e:  # noqa: BLE001  — any unexpected failure is non-fatal
+        log.warning("Stage 4 unexpected error for %s: %s", row.get("part"), e)
+        return True
+
+    try:
+        extracted = json.loads(content)
+    except json.JSONDecodeError:
+        log.warning("Stage 4 returned non-JSON for %s: %r", row.get("part"),
+                    content[:200])
+        return True
+
+    if not isinstance(extracted, dict):
+        return True
+
+    # Apply only the requested missing fields, coerced to the right type.
+    # A null / absent / un-coercible value leaves the field alone.
+    for field in missing:
+        val = _coerce(field, extracted.get(field))
+        if val is not None:
+            row[field] = val
+
+    row["llm_normalized"] = 1
+    return True
+
+
+def apply_llm_fallback(rows: list[dict], category: str) -> dict:
+    """Run stage 4 on every straggler in `rows`. Returns summary stats:
+        { "attempted": N, "filled": M }
+    where attempted = rows where the LLM was actually called (so if
+    OPENROUTER_API_KEY is missing, attempted will be 0), and filled = rows
+    that have ZERO missing fields after the LLM call."""
+    required = REQUIRED_FIELDS.get(category, [])
+    if not required:
+        return {"attempted": 0, "filled": 0}
+
+    # If there are stragglers but no API key, log once (not once per row).
+    if not os.environ.get("OPENROUTER_API_KEY"):
+        any_missing = any(
+            any(r.get(f) is None for f in required) for r in rows
+        )
+        if any_missing:
+            log.warning(
+                "OPENROUTER_API_KEY not set — stage 4 skipped for this batch."
+            )
+
+    attempted = 0
+    filled = 0
+    for row in rows:
+        missing_before = [f for f in required if row.get(f) is None]
+        if not missing_before:
+            continue
+        if _stage_llm_fallback(row, category):
+            attempted += 1
+        missing_after = [f for f in required if row.get(f) is None]
+        if not missing_after:
+            filled += 1
+    return {"attempted": attempted, "filled": filled}
 
 
 # ---------------------------------------------------------------------------
