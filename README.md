@@ -83,13 +83,40 @@ Restart Claude Desktop after editing.
 
 Typical session — Claude orchestrates the browser and tools:
 
-1. Navigate to a PB Tech category URL via Playwright MCP
-2. Run `pbtech-extract-listing.js` via `browser_run_code`
-3. Pass the extractor JSON to `pbtech_scrape`
-4. If multi-page, repeat 1-3 for remaining pages
-5. Query with `pbtech_query`: `SELECT part, title, gbps, max_watts, length_m, price FROM products WHERE gbps >= 40 AND max_watts >= 100 ORDER BY price`
-6. Refine queries based on results
-7. `pbtech_session_reset` when switching to a different product search
+1. Navigate to any PB Tech category URL via Playwright MCP (warms Cloudflare
+   and PHPSESSID cookies). Hub URLs (`/usb-c-cables`) and leaf URLs
+   (`/usb-c-usb-c-cables`) both work; the fetch helper normalizes to
+   `/shop-all` internally.
+2. Run `pbtech-fetch-category.js` via `browser_run_code`. This fetches the
+   full listing in a single POST to PB Tech's ajax endpoint and returns
+   structured JSON — no pagination loop needed.
+3. Pass the extractor JSON to `pbtech_scrape`.
+4. Query with `pbtech_query`:
+   `SELECT part, title, gbps, max_watts, length_m, price FROM products WHERE gbps >= 40 AND max_watts >= 100 ORDER BY price`
+5. Refine queries based on results.
+6. `pbtech_session_reset` when switching to a different product search.
+
+## Popup handling
+
+PB Tech shows site-owned modal popups (web-push permission prompt,
+promotional sale popup) a few seconds after page load on fresh browser
+sessions. `pbtech-fetch-category.js` preemptively suppresses those that key
+on cookies by setting the cookie the site uses to track "already shown."
+Known cookie-keyed popups:
+
+- `user_web_push_subscription_displayed=1` — web-push permission modal
+- `sale_popup=true` — promotional sale popup
+
+Popups that don't write a cookie on display (e.g. the "Become a PB Insider"
+signup prompt, which appears on the home page only — not on category pages)
+cannot be suppressed this way, but since the helper only operates after
+Claude has navigated to a category page, and parses response HTML rather
+than the live DOM, any popup that did appear would be irrelevant to the
+fetch anyway.
+
+To handle a new popup that writes a cookie: dismiss it manually in a normal
+browser, find the cookie in DevTools → Application → Cookies, and add it
+to the `dismissCookies` array at the top of `pbtech-fetch-category.js`.
 
 ## Session database
 
@@ -99,18 +126,21 @@ than tool usage.
 
 ## Known category URLs
 
-Top-level category pages redirect to hub pages with sub-categories. The actual
-listing URLs one level deeper are:
+Hub and leaf URLs both work as input (the fetch helper normalizes to
+`/shop-all`). Examples:
 
-- `/category/peripherals/cables/thunderbolt-cables` (listing, ~20 products)
-- `/category/peripherals/cables/usb-c-cables/usb-c-usb-c-cables` (~410 products, 21 pages)
-- `/category/peripherals/cables/usb-c-cables/usb-c-displayport-cables`
-- `/category/peripherals/cables/usb-c-cables/usb-c-hdmi-cables`
-- `/category/peripherals/monitors/professional-monitors`
-- `/category/peripherals/monitors/gaming-monitors`
+- `/category/peripherals/cables/thunderbolt-cables` (leaf, ~20 products)
+- `/category/peripherals/cables/usb-c-cables` (hub, ~764 products across
+  all connector-pair subcategories)
+- `/category/peripherals/cables/usb-c-cables/usb-c-usb-c-cables` (leaf,
+  ~411 products)
+- `/category/peripherals/cables/usb-c-cables/usb-c-displayport-cables` (leaf)
+- `/category/peripherals/cables/usb-c-cables/usb-c-hdmi-cables` (leaf)
+- `/category/peripherals/monitors/professional-monitors` (leaf)
+- `/category/peripherals/monitors/gaming-monitors` (leaf)
 
-See also `pbtech-extractor-README.md` (co-located with extractor at
-`~/scripts/pbtech/`).
+See also `pbtech-fetch-category-README.md` if co-located with the fetch
+helper at `~/scripts/pbtech/` (rename your local sibling README to match).
 
 ## Tests
 
@@ -124,15 +154,19 @@ See also `pbtech-extractor-README.md` (co-located with extractor at
 Fixtures:
 - `fixture_tb_cables_2026-04-16.json` — Thunderbolt cables, 20 products,
   stages 1-3 achieve 20/20 coverage
-- `fixture_usbc_cables_2026-04-16.json` — USB-C to USB-C cables (page 1 of 21),
-  stages 1-3 achieve 5/15/20 on gbps/max_watts/length_m; 18 stragglers need
-  stage 4
+- `fixture_usbc_cables_2026-04-16.json` — USB-C to USB-C cables (page 1 of 21
+  at the old 20-per-page scrape), stages 1-3 achieve 5/15/20 on
+  gbps/max_watts/length_m; 18 stragglers need stage 4
+
+Fixtures were produced by the legacy DOM-walking `extractor.js`, which
+returned 20 products per page. They remain valid for normalizer regression
+tests because the per-product output shape is unchanged between the two
+extractors.
 
 ## v0 limitations
 
 - Connector strings not normalized to enums (use `LIKE '%USB-C%'` in queries)
 - Mixed cable/monitor columns in one table (fine at <500 rows)
-- No pagination automation (Claude must navigate + extract each page)
 - `pbtech_scrape` accepts pre-extracted JSON rather than driving its own
   browser (v0 simplification — avoids Playwright dependency and Cloudflare WAF)
 - Stage 3 spec-table lookup fills in standard-permitted values when a cable's
@@ -145,5 +179,15 @@ Fixtures:
 - [x] Step 1: SQLite schema + three tool stubs
 - [x] Step 2: Test normalizer against real PB Tech extractor output
 - [x] Step 3: LLM fallback via gpt-4o-mini (OpenRouter)
-- [ ] Step 4: Pagination convenience (detect multi-page, prompt user)
+- [x] Step 4: Pagination convenience — solved via single-POST mechanism
+  (`toggle_records_pdo.php` + `ajax_product_collection_view_pdo.php`) in
+  `pbtech-fetch-category.js`. Replaces the earlier multi-page plan.
 - [ ] Step 5: First real shopping session
+
+## Legacy
+
+`extractor.js` is the original DOM-walking extractor that reads
+`.js-product-card` elements from the live page. It's kept as a fallback in
+case the ajax mechanism in `pbtech-fetch-category.js` ever stops working;
+if that happens, reverting to `extractor.js` means accepting 20 products
+per page and manually paginating but keeps the toolkit functional.
