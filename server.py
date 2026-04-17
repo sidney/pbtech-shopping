@@ -28,16 +28,18 @@ mcp = FastMCP("pbtech-shopping")
 def pbtech_scrape(category_url: str, extractor_json: str) -> str:
     """Normalize and store PB Tech product data from the JS extractor output.
 
-    Workflow: (1) navigate to category_url in Playwright MCP, (2) run the
-    extractor JS via browser_run_code or browser_evaluate, (3) pass the
-    resulting JSON string here. This tool normalizes specs (regex, spec rows,
-    standards lookup, and LLM fallback for stragglers) and inserts into the
-    session SQLite database.
+    Workflow: (1) navigate to any page on www.pbtech.co.nz via Playwright MCP
+    (warms Cloudflare and PHPSESSID cookies), (2) run pbtech-fetch-category.js
+    via browser_run_code or browser_evaluate — this fetches the full listing
+    in one POST and returns structured JSON, (3) pass the resulting JSON
+    string here. This tool normalizes specs (regex, spec rows, standards
+    lookup, and LLM fallback for stragglers) and inserts into the session
+    SQLite database.
 
     Args:
         category_url: The PB Tech category URL that was scraped (used for
             category detection: cables, monitors, etc.)
-        extractor_json: Raw JSON string output from pbtech-extract-listing.js.
+        extractor_json: Raw JSON string output from pbtech-fetch-category.js.
             Expected shape: {url, count, products: [{part, title, subtitle,
             url, price_nzd_inc_gst, specs: {}}], spec_fields_seen: []}
     """
@@ -84,7 +86,9 @@ def pbtech_scrape(category_url: str, extractor_json: str) -> str:
     finally:
         conn.close()
 
-    # Pagination info from extractor
+    # Pagination info from extractor. With pbtech-fetch-category.js this is
+    # always a single page, so the line is suppressed; kept for compatibility
+    # with the legacy extractor.js which paginated at 20 per page.
     pag = ""
     if data.get("pages") and data["pages"] > 1:
         pag = f"  page {data.get('page')}/{data['pages']} ({data.get('total')} total products)"

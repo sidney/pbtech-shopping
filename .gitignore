@@ -1,0 +1,75 @@
+# --- Python -------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+pip-log.txt
+pip-delete-this-directory.txt
+*.log
+
+# --- Node / JS (lightweight; repo is mostly Python, extractor is vanilla JS)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# --- SQLite session DB (created at runtime by the MCP server) -----------
+# Session DB lives at ~/.cache/pbtech/session.db in normal use, but if a
+# test or ad-hoc run drops one in the repo root, don't commit it.
+*.db
+*.sqlite
+*.sqlite3
+
+# --- Environment / secrets ----------------------------------------------
+.env
+.env.*
+!.env.example
+
+# --- Editor / IDE --------------------------------------------------------
+# Emacs
+*~
+\#*\#
+.\#*
+*.elc
+auto-save-list/
+# Vim
+*.swp
+*.swo
+*.swn
+# VS Code
+.vscode/
+# JetBrains
+.idea/
+*.iml
+
+# --- macOS ---------------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+
+# --- Windows -------------------------------------------------------------
+Thumbs.db
+Desktop.ini
+
+# --- Linux ---------------------------------------------------------------
+.directory
+.Trash-*
+
+# --- Coverage / local tool output ---------------------------------------
+.coverage
+htmlcov/
+coverage.xml
