@@ -80,33 +80,39 @@ replacing `<REPO>` with the absolute path to your clone:
 Restart Claude Desktop after editing.
 
 Separately, the Playwright MCP server must be configured to allow
-`browser_run_code` to load `pbtech-fetch-category.js` from this repo. The
-Playwright MCP setup requirements (output-dir flag, workspace root /
-symlink dance, trailing-semicolon rule) are general to using Playwright
-MCP from Claude Desktop and apply to other browser-driving projects too;
-they live in Open Brain under topic `playwright-mcp` rather than being
-duplicated here.
+`browser_run_code` to load `pbtech-prime-browser.js` and
+`pbtech-fetch-category.js` from this repo. The Playwright MCP setup
+requirements (output-dir flag, workspace root / symlink dance,
+trailing-semicolon rule) are general to using Playwright MCP from Claude
+Desktop and apply to other browser-driving projects too; they live in Open
+Brain under topic `playwright-mcp` rather than being duplicated here.
 
 ## Usage pattern (in Claude Desktop chat)
 
 Typical session — Claude orchestrates the browser and tools:
 
-1. Navigate to any PB Tech category URL via Playwright MCP (warms Cloudflare
+1. **Prime the browser** (once per Playwright session, before any navigation
+   to pbtech.co.nz): run `pbtech-prime-browser.js` via `browser_run_code` with
+   `filename: ...` pointing at the file in this repo. This writes PB Tech's
+   popup-suppression cookies into the BrowserContext cookie jar so the
+   web-push permission prompt and sale popup do not fire on the first
+   category page load. See "Popup handling" below for the mechanism.
+2. **Navigate** to a PB Tech category URL via Playwright MCP (warms Cloudflare
    and PHPSESSID cookies). Hub URLs (`/usb-c-cables`) and leaf URLs
    (`/usb-c-usb-c-cables`) both work; the fetch helper normalizes to
    `/shop-all` internally. Use an explicit `browser_navigate` — never
    `browser_evaluate` against whatever page happens to be loaded (see
    "Smoke-test convention" below).
-2. Run `pbtech-fetch-category.js` via `browser_run_code` with `filename: ...`
-   pointing at the file in this repo (or wherever you've symlinked it per
-   the Playwright MCP setup). This fetches the full listing in a single POST
-   to PB Tech's ajax endpoint and returns structured JSON — no pagination
-   loop needed.
-3. Pass the extractor JSON to `pbtech_scrape`.
-4. Query with `pbtech_query`:
+3. **Extract**: run `pbtech-fetch-category.js` via `browser_run_code` with
+   `filename: ...` pointing at the file in this repo (or wherever you've
+   symlinked it per the Playwright MCP setup). This fetches the full listing
+   in a single POST to PB Tech's ajax endpoint and returns structured JSON —
+   no pagination loop needed.
+4. **Ingest**: pass the extractor JSON to `pbtech_scrape`.
+5. **Query** with `pbtech_query`:
    `SELECT part, title, gbps, max_watts, length_m, price FROM products WHERE gbps >= 40 AND max_watts >= 100 ORDER BY price`
-5. Refine queries based on results.
-6. `pbtech_session_reset` when switching to a different product search.
+6. **Refine** queries based on results.
+7. **Reset**: `pbtech_session_reset` when switching to a different product search.
 
 ## Extraction notes
 
@@ -138,13 +144,30 @@ given page.
 - **Professional monitors**: Screen Size, Screen Resolution, Refresh Rate,
   Response Time, Sync Type, Panel Type, VESA Size, Video Cable Included,
   Curved (sometimes), MPN, Part #
+- **Portable SSDs**: Storage Size, USB Powered, Form Factor, Interface,
+  Colour, MPN, Part # — note the normalized `gbps` column is unreliable
+  for this category (the stage-1 regex treats "2000MB/s" subtitles as
+  Mbps and stores garbage values like 2.0); query title and subtitle
+  text with LIKE instead.
 
 ## Popup handling
 
 PB Tech shows site-owned modal popups (web-push permission prompt,
 promotional sale popup) a few seconds after page load on fresh browser
-sessions. `pbtech-fetch-category.js` preemptively suppresses those that key
-on cookies by setting the cookie the site uses to track "already shown."
+sessions. Suppression is handled by `pbtech-prime-browser.js`, a small
+companion script that writes the site's "already shown" cookies into the
+BrowserContext cookie jar via Playwright's `context.addCookies()` API.
+Once set, these cookies are sent with the first request to pbtech.co.nz,
+so the site's display-once logic treats the popups as already shown and
+skips them entirely.
+
+The prime script must run **before any navigation** to pbtech.co.nz in a
+new Playwright session. An earlier implementation used `document.cookie =
+...` inside the extractor's `page.evaluate`, but this ran after the target
+page had already loaded — too late to suppress popups on the first
+category page of a session. Running a priming step that writes to the
+cookie jar directly closes that timing gap.
+
 Known cookie-keyed popups:
 
 - `user_web_push_subscription_displayed=1` — web-push permission modal
@@ -152,14 +175,14 @@ Known cookie-keyed popups:
 
 Popups that don't write a cookie on display (e.g. the "Become a PB Insider"
 signup prompt, which appears on the home page only — not on category pages)
-cannot be suppressed this way, but since the helper only operates after
-Claude has navigated to a category page, and parses response HTML rather
-than the live DOM, any popup that did appear would be irrelevant to the
-fetch anyway.
+cannot be suppressed this way, but since the extractor only operates after
+navigation to a category page, and parses response HTML rather than the
+live DOM, any popup that did appear would be irrelevant to the fetch
+anyway.
 
 To handle a new popup that writes a cookie: dismiss it manually in a normal
-browser, find the cookie in DevTools → Application → Cookies, and add it
-to the `dismissCookies` array at the top of `pbtech-fetch-category.js`.
+browser, find the cookie in DevTools → Application → Cookies, and add a
+new entry to the cookies array in `pbtech-prime-browser.js`.
 
 ## Smoke-test convention
 
@@ -174,6 +197,10 @@ is still in the DOM.
 Source the URL from the "Known category URLs" list below rather than
 reconstructing from memory — PB Tech's URL structure (hub vs leaf, required
 path segments) makes fabricated paths a real trap.
+
+A full smoke test also exercises `pbtech-prime-browser.js` as its first
+step, so the test covers the end-to-end session-level flow including popup
+suppression, not just the extractor in isolation.
 
 The general principle applies beyond this project and is captured in Open
 Brain under topic `playwright-mcp`.
@@ -213,6 +240,12 @@ Monitors (`/category/peripherals/monitors/...`):
 - `ultrawide-monitors`, `curved-monitors`, `portable-monitors`
 - `usb-c-monitors`, `touch-screen-monitors`, `medical-monitors`
 - `off-lease-monitors` (refurb)
+
+External storage (`/category/peripherals/hdd-external/...`):
+
+- `portable-ssd` (leaf, ~78 products)
+- `portable-hdd` (leaf, ~61 products)
+- `desktop-hdd`, `mac-drives`, `game-drives`, `direct-attached-storage`
 
 Top-level departments worth knowing (`/category/...`):
 
@@ -269,6 +302,9 @@ watching `/code/ajax_product_collection_view_pdo.php` in the Network tab.
   listing doesn't attest a specific rate (e.g. a TB5 SKU with no Gbps in the
   title gets 80/240). This reflects what the standard allows, not what the
   vendor guarantees — accurate enough for shortlisting.
+- Stage-1 regex misinterprets MB/s as Mbps (→ decimal Gbps) when parsing
+  SSD subtitles. The normalized `gbps` column is unreliable for storage
+  categories; for SSDs, query title/subtitle text directly with LIKE.
 
 ## Build roadmap
 
@@ -278,7 +314,10 @@ watching `/code/ajax_product_collection_view_pdo.php` in the Network tab.
 - [x] Step 4: Pagination convenience — solved via single-POST mechanism
   (`toggle_records_pdo.php` + `ajax_product_collection_view_pdo.php`) in
   `pbtech-fetch-category.js`. Replaces the earlier multi-page plan.
-- [ ] Step 5: First real shopping session
+- [x] Step 5: First real shopping session (external SSD for MacBook M5 Pro,
+  2026-04-24). Surfaced the popup-suppression timing gap (fixed by adding
+  `pbtech-prime-browser.js`) and the stage-1 regex MB/s-as-Mbps bug (noted
+  in v0 limitations; fix deferred).
 
 ## Legacy
 

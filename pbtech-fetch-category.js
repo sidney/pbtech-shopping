@@ -1,9 +1,17 @@
 // PB Tech category listing fetcher + extractor.
 //
-// Usage: navigate the Playwright browser to any pbtech.co.nz page (any
-// category URL, or the home page — just something that establishes
-// Cloudflare cookies and PHPSESSID), then call browser_run_code with
-// this file as `filename`.
+// Usage:
+// 1. Once per Playwright session, before any navigation to pbtech.co.nz:
+//    run pbtech-prime-browser.js via browser_run_code. This sets
+//    popup-suppression cookies in the BrowserContext cookie jar so that
+//    PB Tech's web-push permission and sale popups do not fire on the
+//    first category page load of the session. This extractor has no
+//    self-protection against those popups — see the NOTE at the top of
+//    the inner page.evaluate function.
+// 2. Navigate the Playwright browser to the target PB Tech category URL
+//    (also warms Cloudflare cookies and PHPSESSID for the subsequent
+//    ajax POSTs performed by this extractor).
+// 3. Call browser_run_code with this file as `filename`.
 //
 // Returns: { url, title, count, total, page, pages, spec_fields_seen, products[] }
 //
@@ -21,6 +29,18 @@
 
 async (page) => {
   return await page.evaluate(async () => {
+    // NOTE: this extractor has no protection of its own against PB Tech's
+    // cookie-keyed popups (web-push permission prompt, promotional sale
+    // popup). At time of writing, pbtech-prime-browser.js is the companion
+    // script that primes the BrowserContext cookie jar to prevent them,
+    // and must run once per Playwright session before any navigation to
+    // pbtech.co.nz. If no priming has occurred, the popups will display
+    // in the browser on the first category page load of the session —
+    // harmless to this extractor (which fetches the listing via ajax and
+    // parses the response HTML, so modal dismissal is not required for
+    // correct output) but visually noisy and a sign that the priming
+    // step has been skipped.
+
     const origin = location.origin;
     let pathname = location.pathname;
     // Normalize: append /shop-all unless already present. Safe for both
@@ -31,39 +51,6 @@ async (page) => {
       pathname = pathname.replace(/\/$/, '') + '/shop-all';
     }
     const categoryUrl = origin + pathname;
-
-    // ----- Popup suppression --------------------------------------------
-    // PB Tech shows site-owned modal popups a few seconds after page load
-    // on fresh browser sessions. Each popup writes a cookie when
-    // displayed; the site's display-once logic checks for that cookie on
-    // subsequent loads and skips the popup if present. Setting the
-    // cookie preemptively makes the display-once logic treat the popup
-    // as already shown.
-    //
-    // To handle a new popup that writes a cookie:
-    //   1. Dismiss it in your normal browser.
-    //   2. DevTools → Application → Cookies → find the new cookie that
-    //      was written (often a boolean-ish name like *_displayed or
-    //      *_popup).
-    //   3. Add a line below with the same name/value.
-    //
-    // Not every popup writes a cookie — e.g. the "Become a PB Insider"
-    // signup prompt appears only on the home page (not on category
-    // pages) and leaves no cookie trace; it cannot be suppressed this
-    // way but is irrelevant for this helper's workflow.
-    //
-    // Guards are belt-and-braces: if the cookie is already set
-    // (including by a prior run in the same browser session), skip to
-    // avoid churn.
-    const dismissCookies = [
-      ['user_web_push_subscription_displayed', '1'],  // web-push permission modal
-      ['sale_popup', 'true'],                         // promotional sale popup
-    ];
-    for (const [name, value] of dismissCookies) {
-      if (!document.cookie.includes(name + '=')) {
-        document.cookie = `${name}=${value}; path=/; max-age=31536000`;
-      }
-    }
 
     const commonHeaders = {
       'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
