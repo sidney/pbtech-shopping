@@ -32,7 +32,11 @@ raw_specs (JSON), llm_normalized, scraped_at
 
 1. Regex on title + subtitle (`40Gbps`, `480Mbps`, `100W`, `1.5m`, `2560x1440`,
    `165Hz`). Monitor-only patterns (resolution, Hz, inches) are category-gated
-   so they don't contaminate cable rows.
+   so they don't contaminate cable rows. The Gbps/Mbps patterns deliberately
+   don't match the slash form (`Gb/s`, `Mb/s`) because those are
+   indistinguishable from storage throughput notations (`GB/s`, `MB/s`) after
+   lowercasing — matching them used to produce bogus gbps values on SSD
+   subtitles like "Up to 1050MB/s" (fixed 2026-04-24).
 2. Structured spec rows from extractor (`Cable Length`, `Connector 1/2`, etc.).
    The `Braided` value is matched exactly against `yes`/`no` — "Not Specified"
    leaves the field NULL rather than being misread as not-braided.
@@ -145,10 +149,12 @@ given page.
   Response Time, Sync Type, Panel Type, VESA Size, Video Cable Included,
   Curved (sometimes), MPN, Part #
 - **Portable SSDs**: Storage Size, USB Powered, Form Factor, Interface,
-  Colour, MPN, Part # — note the normalized `gbps` column is unreliable
-  for this category (the stage-1 regex treats "2000MB/s" subtitles as
-  Mbps and stores garbage values like 2.0); query title and subtitle
-  text with LIKE instead.
+  Colour, MPN, Part #. The normalized `gbps` column is null for most SSDs
+  because MB/s throughput is storage bandwidth, not a USB signalling rate,
+  and the stage-1 regex correctly doesn't treat it as one. SSDs whose
+  subtitles mention an explicit signalling rate ("10Gbps", "20Gbps") do
+  populate `gbps` correctly. To filter by throughput, query `title` /
+  `subtitle` with `LIKE '%MB/s%'` on the specific value.
 
 ## Popup handling
 
@@ -256,7 +262,9 @@ Top-level departments worth knowing (`/category/...`):
 
 ## Tests
 
-- `test_smoke.py` — mock cables + monitors, exercises DB pipeline
+- `test_smoke.py` — mock cables + monitors, exercises DB pipeline. Also
+  includes a regression test for the MB/s-as-Mbps bug fixed 2026-04-24
+  (see `test_mb_per_second_not_matched_as_mbps`).
 - `test_real.py [fixture.json]` — runs normalizer stages 1-3 against a real
   extractor dump and reports coverage + stragglers
 - `test_stage4.py` — monkeypatches `_call_openrouter` to verify stage 4
@@ -302,9 +310,6 @@ watching `/code/ajax_product_collection_view_pdo.php` in the Network tab.
   listing doesn't attest a specific rate (e.g. a TB5 SKU with no Gbps in the
   title gets 80/240). This reflects what the standard allows, not what the
   vendor guarantees — accurate enough for shortlisting.
-- Stage-1 regex misinterprets MB/s as Mbps (→ decimal Gbps) when parsing
-  SSD subtitles. The normalized `gbps` column is unreliable for storage
-  categories; for SSDs, query title/subtitle text directly with LIKE.
 
 ## Build roadmap
 
@@ -315,9 +320,10 @@ watching `/code/ajax_product_collection_view_pdo.php` in the Network tab.
   (`toggle_records_pdo.php` + `ajax_product_collection_view_pdo.php`) in
   `pbtech-fetch-category.js`. Replaces the earlier multi-page plan.
 - [x] Step 5: First real shopping session (external SSD for MacBook M5 Pro,
-  2026-04-24). Surfaced the popup-suppression timing gap (fixed by adding
-  `pbtech-prime-browser.js`) and the stage-1 regex MB/s-as-Mbps bug (noted
-  in v0 limitations; fix deferred).
+  2026-04-24). Surfaced two bugs, both fixed: the popup-suppression timing
+  gap (fixed by adding `pbtech-prime-browser.js`) and the stage-1 regex
+  MB/s-as-Mbps misfire on SSD subtitles (fixed by dropping the `gb/s` and
+  `mb/s` slash-form alternatives from the signalling-rate regexes).
 
 ## Legacy
 

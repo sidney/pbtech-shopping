@@ -176,6 +176,76 @@ def test_normalizer():
     print()
 
 
+def test_mb_per_second_not_matched_as_mbps():
+    """Regression test: SSD subtitles using MB/s / Mb/s (storage throughput,
+    megabytes per second) must not be misread by the stage-1 regex as Mbps
+    (signalling rate, megabits per second) and stored as decimal Gbps.
+
+    Before the fix on 2026-04-24, the pattern '(?:mbps|mb/s)' matched both
+    forms after .lower(), so '1050MB/s' became gbps=1.05 and '2000Mb/s'
+    became gbps=2.0. See step-5 finding for the observed misfires.
+
+    Also spot-checks that unambiguous Gbps / Mbps signalling-rate patterns
+    still match correctly.
+    """
+    print("=== MB/s-is-not-Mbps regression ===")
+    # Use an SSD-like URL so category detection maps to 'other'. The gbps/Mbps
+    # regex branches are category-agnostic, so detection doesn't affect them.
+    ssd_url = "https://www.pbtech.co.nz/category/peripherals/hdd-external/portable-ssd"
+
+    # Cases that should NOT match as a signalling rate. Each is taken from
+    # or inspired by the 2026-04-24 portable-ssd scrape.
+    should_not_match = [
+        ("SSD001", "Up to 1050MB/s",                              "Samsung T7 canonical MB/s"),
+        ("SSD002", "2000MB/s",                                    "Bare MB/s, no 'up to'"),
+        ("SSD003", "2000Mb/s , IP68 Water / Dust Proof",          "ADATA vendor typo: Mb/s meaning MB/s"),
+        ("SSD004", "Read / Write Speeds up to 2000MB/s",          "Samsung T9 style"),
+        ("SSD005", "Up to 6700MB/s",                              "LaCie TB5 MB/s"),
+        ("SSD006", "Up to 800MB/s",                               "SanDisk E30 slower MB/s"),
+        ("SSD007", "1000Mb/s - Built-in USB-C Cable",             "ADATA SC740 vendor typo"),
+    ]
+    for part, subtitle, desc in should_not_match:
+        product = {
+            "part": part,
+            "title": f"Test SSD {part}",
+            "subtitle": subtitle,
+            "url": f"https://example.com/{part}",
+            "price_nzd_inc_gst": 100.0,
+            "specs": {},
+        }
+        row = normalize_product(product, ssd_url)
+        status = "OK" if row["gbps"] is None else f"FAIL (got gbps={row['gbps']})"
+        print(f"  {status}: {desc} — {subtitle!r}")
+        assert row["gbps"] is None, (
+            f"Regression: {subtitle!r} produced gbps={row['gbps']} — should stay None"
+        )
+
+    # Cases that SHOULD still match — confirms the fix doesn't over-reach
+    # and that unambiguous signalling-rate tokens are still picked up.
+    should_match = [
+        ("CAB001", "USB 3.2 Gen2 (10Gbps) - Read up to 1050MB/s",  10.0,  "Samsung T7: 10Gbps wins, MB/s ignored"),
+        ("CAB002", "Transcend ESD410C 1TB USB-C 20Gbps",            20.0,  "Explicit 20Gbps"),
+        ("CAB003", "Cable 40Gbps 100W PD",                          40.0,  "Cable 40Gbps"),
+        ("CAB004", "USB 2.0 480Mbps",                               0.48,  "USB 2.0 legit Mbps"),
+    ]
+    for part, text, expected, desc in should_match:
+        product = {
+            "part": part,
+            "title": f"Test {part}",
+            "subtitle": text,
+            "url": f"https://example.com/{part}",
+            "price_nzd_inc_gst": 100.0,
+            "specs": {},
+        }
+        row = normalize_product(product, ssd_url)
+        status = "OK" if row["gbps"] == expected else f"FAIL (got {row['gbps']}, wanted {expected})"
+        print(f"  {status}: {desc} — {text!r} → gbps={row['gbps']}")
+        assert row["gbps"] == expected, (
+            f"Regression: {text!r} should match as gbps={expected}, got {row['gbps']}"
+        )
+    print()
+
+
 def test_db_pipeline():
     print("=== DB Pipeline ===")
     reset_db()
@@ -247,4 +317,5 @@ def test_db_pipeline():
 if __name__ == "__main__":
     test_category_detection()
     test_normalizer()
+    test_mb_per_second_not_matched_as_mbps()
     test_db_pipeline()

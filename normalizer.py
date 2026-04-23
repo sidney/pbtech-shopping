@@ -73,16 +73,28 @@ def _stage_regex(row: dict, text: str, category: str):
     when a cable's marketing copy mentions e.g. "8K 60Hz"."""
     t = text.lower()
 
-    # Gbps: "40gbps", "40 gbps", "40gb/s" — meaningful for both categories
+    # Gbps: "40gbps", "40 gbps" — meaningful for both categories.
+    #
+    # NOTE: we intentionally DON'T match the slash form "Gb/s" here, and
+    # likewise don't match "Mb/s" in the Mbps regex below. After .lower()
+    # the slash forms are indistinguishable from storage-throughput
+    # notations ("GB/s", "MB/s" — gigabytes / megabytes per second).
+    # Without this guard, SSD subtitles like "Up to 1050MB/s" or
+    # "2000Mb/s" (a vendor typo for MB/s) would match the Mbps branch
+    # and be stored as gbps=1.05 / gbps=2.0 — plausible-looking garbage.
+    # Dropping the slash alternatives loses nothing in practice: product
+    # listings advertising real USB/TB signalling rates universally use
+    # the unambiguous "Gbps" / "Mbps" spelling.
     if row.get("gbps") is None:
-        m = re.search(r'(\d+(?:\.\d+)?)\s*(?:gbps|gb/s)', t)
+        m = re.search(r'(\d+(?:\.\d+)?)\s*gbps\b', t)
         if m:
             row["gbps"] = float(m.group(1))
 
     # Mbps: "480mbps" → 0.48 Gbps. UGREEN 50997 advertises 480Mbps in its
     # subtitle (a USB 2.0 speed). Only fires if Gbps regex didn't match.
+    # See the NOTE above on why the slash form "Mb/s" is excluded.
     if row.get("gbps") is None:
-        m = re.search(r'(\d+(?:\.\d+)?)\s*(?:mbps|mb/s)', t)
+        m = re.search(r'(\d+(?:\.\d+)?)\s*mbps\b', t)
         if m:
             row["gbps"] = float(m.group(1)) / 1000
 
