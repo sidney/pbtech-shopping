@@ -94,7 +94,7 @@ async (page) => {
     // names).
     let envelope;
     try {
-      const resp = await fetch('/code/ajax_product_collection_view_pdo.php', {
+      const resp = await fetch('/code/ajax_display_products_pdo.php', {
         method: 'POST',
         headers: commonHeaders,
         body: new URLSearchParams({
@@ -122,7 +122,7 @@ async (page) => {
           url: categoryUrl,
           title: document.title,
           count: 0,
-          error: `ajax_product_collection_view_pdo.php returned ${resp.status}`,
+          error: `ajax_display_products_pdo.php returned ${resp.status}`,
         };
       }
       envelope = await resp.json();
