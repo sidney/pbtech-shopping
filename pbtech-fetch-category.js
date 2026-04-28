@@ -1,6 +1,11 @@
 // PB Tech category listing fetcher + extractor.
 //
-// Usage:
+// This script is the FALLBACK path. The primary path is pbtech_scrape(url)
+// in the MCP server, which drives its own headless Chromium via patchright
+// and handles popup suppression internally. Use this script only when
+// pbtech_scrape(url) fails (Cloudflare challenge, browser error, etc.).
+//
+// Fallback usage (3-step Playwright MCP workflow):
 // 1. Once per Playwright session, before any navigation to pbtech.co.nz:
 //    run pbtech-prime-browser.js via browser_run_code. This sets
 //    popup-suppression cookies in the BrowserContext cookie jar so that
@@ -9,8 +14,8 @@
 //    self-protection against those popups — see the NOTE at the top of
 //    the inner page.evaluate function.
 // 2. Navigate the Playwright browser to the target PB Tech category URL
-//    (also warms Cloudflare cookies and PHPSESSID for the subsequent
-//    ajax POSTs performed by this extractor).
+//    (warms Cloudflare cookies and PHPSESSID for the subsequent fetch
+//    calls in this extractor).
 // 3. Call browser_run_code with this file as `filename`.
 //
 // Returns: { url, title, count, total, page, pages, spec_fields_seen, products[] }
@@ -31,15 +36,16 @@ async (page) => {
   return await page.evaluate(async () => {
     // NOTE: this extractor has no protection of its own against PB Tech's
     // cookie-keyed popups (web-push permission prompt, promotional sale
-    // popup). At time of writing, pbtech-prime-browser.js is the companion
-    // script that primes the BrowserContext cookie jar to prevent them,
-    // and must run once per Playwright session before any navigation to
-    // pbtech.co.nz. If no priming has occurred, the popups will display
-    // in the browser on the first category page load of the session —
-    // harmless to this extractor (which fetches the listing via ajax and
-    // parses the response HTML, so modal dismissal is not required for
-    // correct output) but visually noisy and a sign that the priming
-    // step has been skipped.
+    // popup). pbtech-prime-browser.js is the companion script that primes
+    // the BrowserContext cookie jar to prevent them, and must run once per
+    // Playwright session before any navigation to pbtech.co.nz. If no
+    // priming has occurred, the popups will display in the browser on the
+    // first category page load of the session — harmless to this extractor
+    // (which fetches the listing via GET to /shop-all and parses the
+    // response HTML, so modal dismissal is not required for correct output)
+    // but visually noisy and a sign that the priming step has been skipped.
+    // The primary pbtech_scrape(url) path handles this internally and does
+    // not require the priming step.
 
     const origin = location.origin;
     let pathname = location.pathname;

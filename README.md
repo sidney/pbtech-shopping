@@ -297,8 +297,10 @@ actually loads the product grid.
 
 - Connector strings not normalized to enums (use `LIKE '%USB-C%'` in queries)
 - Mixed cable/monitor columns in one table (fine at <500 rows)
-- `pbtech_scrape` accepts pre-extracted JSON rather than driving its own
-  browser (v0 simplification — avoids Playwright dependency and Cloudflare WAF)
+- `extractor_json` optional parameter preserved for fallback: if `pbtech_scrape(url)`
+  fails (Cloudflare challenge or browser error), the legacy 3-step Playwright MCP path
+  (navigate → `browser_run_code pbtech-fetch-category.js` → `pbtech_scrape(url,
+  extractor_json)`) remains functional.
 - Stage 3 spec-table lookup fills in standard-permitted values when a cable's
   listing doesn't attest a specific rate (e.g. a TB5 SKU with no Gbps in the
   title gets 80/240). This reflects what the standard allows, not what the
