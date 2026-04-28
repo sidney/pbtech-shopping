@@ -3,8 +3,9 @@
 Manages a single persistent patchright Chromium session for the lifetime
 of the MCP server process. On first use, primes popup-suppression cookies
 and warms the Cloudflare/PHPSESSID session via a real page navigation.
-Subsequent fetches in the same server session reuse the context — AJAX
-calls inherit the live session cookies without re-navigating.
+Subsequent fetches in the same server session reuse the context — the
+in-browser fetch() call for the /shop-all page inherits live session
+cookies without re-navigating.
 """
 from __future__ import annotations
 
@@ -72,38 +73,22 @@ async () => {
              error: `toggle_records_pdo.php fetch failed: ${e.message}` };
   }
 
-  let envelope;
+  let contentHtml;
   try {
-    const resp = await fetch('/code/ajax_display_products_pdo.php', {
-      method: 'POST',
-      headers: commonHeaders,
-      body: new URLSearchParams({
-        view: 'Gallery',
-        url: pathname,
-        catParent: '', catListId: '', catListName: '', callout: '',
-        searchParams: '', searchValue: '', filterParams: '',
-        pageParams: '1',
-        appleURL: '',
-        forceOpenBox: 'true',
-        forceExDemo: 'true',
-        sortOrder: 'popularity',
-        productList: '', brandParam: '', branchParam: '',
-      }),
-    });
+    const resp = await fetch(categoryUrl);
     if (!resp.ok) {
       return { url: categoryUrl, title: document.title, count: 0,
-               error: `ajax_display_products_pdo.php returned ${resp.status}` };
+               error: `shop-all fetch returned ${resp.status}` };
     }
-    envelope = await resp.json();
+    contentHtml = await resp.text();
   } catch (e) {
     return { url: categoryUrl, title: document.title, count: 0,
              error: `listing fetch/parse failed: ${e.message}` };
   }
 
-  const contentHtml = envelope.content || '';
   if (!contentHtml) {
     return { url: categoryUrl, title: document.title, count: 0,
-             error: 'Response envelope missing content field' };
+             error: 'shop-all returned empty response' };
   }
 
   const parser = new DOMParser();
@@ -153,8 +138,7 @@ async () => {
     };
   });
 
-  const totalMatch = (envelope.totalProducts || '').match(/(\\d+)/);
-  const total = totalMatch ? parseInt(totalMatch[1], 10) : products.length;
+  const total = products.length;
   const spec_fields_seen =
     [...new Set(products.flatMap((p) => Object.keys(p.specs)))].sort();
 

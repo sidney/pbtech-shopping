@@ -8,10 +8,11 @@ AND ≥100W PD under $80").
 
 Three thin MCP tools, orchestration in chat (Architecture B):
 
-1. **`pbtech_scrape(category_url, extractor_json)`** — normalizes and stores
-   extractor output in session SQLite. Claude drives the browser (Playwright
-   MCP, Claude for Chrome, etc.) and passes the result here. Returns count,
-   spec coverage stats, straggler count, and session DB total.
+1. **`pbtech_scrape(category_url)`** — fetches the category internally via
+   headless Chromium (patchright), normalizes specs, and stores in session
+   SQLite. Returns count, spec coverage stats, straggler count, and session
+   DB total. Accepts an optional second argument `extractor_json` for testing
+   or as a fallback if the internal browser fails.
 
 2. **`pbtech_query(sql, limit=20)`** — arbitrary SELECT against session DB.
    Compact pipe-delimited output with abbreviated column names. Hard cap 100
@@ -93,30 +94,22 @@ Brain under topic `playwright-mcp` rather than being duplicated here.
 
 ## Usage pattern (in Claude Desktop chat)
 
-Typical session — Claude orchestrates the browser and tools:
+Typical session:
 
-1. **Prime the browser** (once per Playwright session, before any navigation
-   to pbtech.co.nz): run `pbtech-prime-browser.js` via `browser_run_code` with
-   `filename: ...` pointing at the file in this repo. This writes PB Tech's
-   popup-suppression cookies into the BrowserContext cookie jar so the
-   web-push permission prompt and sale popup do not fire on the first
-   category page load. See "Popup handling" below for the mechanism.
-2. **Navigate** to a PB Tech category URL via Playwright MCP (warms Cloudflare
-   and PHPSESSID cookies). Hub URLs (`/usb-c-cables`) and leaf URLs
-   (`/usb-c-usb-c-cables`) both work; the fetch helper normalizes to
-   `/shop-all` internally. Use an explicit `browser_navigate` — never
-   `browser_evaluate` against whatever page happens to be loaded (see
-   "Smoke-test convention" below).
-3. **Extract**: run `pbtech-fetch-category.js` via `browser_run_code` with
-   `filename: ...` pointing at the file in this repo (or wherever you've
-   symlinked it per the Playwright MCP setup). This fetches the full listing
-   in a single POST to PB Tech's ajax endpoint and returns structured JSON —
-   no pagination loop needed.
-4. **Ingest**: pass the extractor JSON to `pbtech_scrape`.
-5. **Query** with `pbtech_query`:
+1. **Scrape**: `pbtech_scrape("https://www.pbtech.co.nz/category/peripherals/cables/thunderbolt-cables")` — fetches internally via headless Chromium, normalizes, stores. No Playwright MCP needed.
+2. **Query** with `pbtech_query`:
    `SELECT part, title, gbps, max_watts, length_m, price FROM products WHERE gbps >= 40 AND max_watts >= 100 ORDER BY price`
-6. **Refine** queries based on results.
-7. **Reset**: `pbtech_session_reset` when switching to a different product search.
+3. **Refine** queries based on results.
+4. **Reset**: `pbtech_session_reset` when switching to a different product search.
+
+### Fallback: manual extraction via Playwright MCP
+
+If `pbtech_scrape(url)` fails (Cloudflare challenge, browser error), the
+legacy 3-step path still works:
+
+1. Navigate to the category URL via Playwright MCP (`browser_navigate`).
+2. Run `pbtech-fetch-category.js` via `browser_run_code` — returns structured JSON.
+3. Pass the JSON: `pbtech_scrape(url, extractor_json)`.
 
 ## Extraction notes
 

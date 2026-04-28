@@ -15,11 +15,11 @@
 //
 // Returns: { url, title, count, total, page, pages, spec_fields_seen, products[] }
 //
-// Fetches the full category listing in a single POST to PB Tech's ajax
-// endpoint (bypassing pagination) and parses the response HTML into the
-// same shape produced by the older DOM-walking extractor.js. The category
-// URL is derived from location.pathname — the caller drives navigation
-// before invoking this script.
+// Fetches the full category listing by GETting the /shop-all URL (products
+// are server-rendered in the initial page HTML) and parses it into the same
+// shape produced by the older DOM-walking extractor.js. The category URL is
+// derived from location.pathname — the caller drives navigation before
+// invoking this script.
 //
 // On failure returns {url, title, count: 0, error: '...'} so server.py's
 // `if "error" in data` branch catches it.
@@ -86,46 +86,20 @@ async (page) => {
       };
     }
 
-    // Step 2: fetch the listing. 17-field payload; most fields are empty
-    // strings — PHP handler reads them without null-checking, so all
-    // must be present. view=Gallery produces HTML with .js-product-card
-    // selectors that the per-product parser below expects (Expanded
-    // List view embeds the same spec data but under different class
-    // names).
-    let envelope;
+    // Step 2: fetch the /shop-all page. Products are now server-rendered
+    // in the initial HTML — GET the categoryUrl directly.
+    let contentHtml;
     try {
-      const resp = await fetch('/code/ajax_display_products_pdo.php', {
-        method: 'POST',
-        headers: commonHeaders,
-        body: new URLSearchParams({
-          view: 'Gallery',
-          url: pathname,
-          catParent: '',
-          catListId: '',
-          catListName: '',
-          callout: '',
-          searchParams: '',
-          searchValue: '',
-          filterParams: '',
-          pageParams: '1',
-          appleURL: '',
-          forceOpenBox: 'true',
-          forceExDemo: 'true',
-          sortOrder: 'popularity',
-          productList: '',
-          brandParam: '',
-          branchParam: '',
-        }),
-      });
+      const resp = await fetch(categoryUrl);
       if (!resp.ok) {
         return {
           url: categoryUrl,
           title: document.title,
           count: 0,
-          error: `ajax_display_products_pdo.php returned ${resp.status}`,
+          error: `shop-all fetch returned ${resp.status}`,
         };
       }
-      envelope = await resp.json();
+      contentHtml = await resp.text();
     } catch (e) {
       return {
         url: categoryUrl,
@@ -135,16 +109,12 @@ async (page) => {
       };
     }
 
-    // Envelope shape: {totalProducts: "411 products", pageCount: "Page 1
-    // of 1", collectionParams: {...}, showFilterHead: false, content:
-    // "<html>"}
-    const contentHtml = envelope.content || '';
     if (!contentHtml) {
       return {
         url: categoryUrl,
         title: document.title,
         count: 0,
-        error: 'Response envelope missing content field',
+        error: 'shop-all returned empty response',
       };
     }
 
@@ -214,10 +184,7 @@ async (page) => {
       };
     });
 
-    // totalProducts comes back as e.g. "411 products" — extract the
-    // integer.
-    const totalMatch = (envelope.totalProducts || '').match(/(\d+)/);
-    const total = totalMatch ? parseInt(totalMatch[1], 10) : products.length;
+    const total = products.length;
 
     const spec_fields_seen =
       [...new Set(products.flatMap((p) => Object.keys(p.specs)))].sort();
