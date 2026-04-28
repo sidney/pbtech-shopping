@@ -4,16 +4,14 @@ pbtech-shopping: session-scoped scrape-normalize-query MCP server.
 Three tools for filtering PB Tech's catalog on cross-spec criteria
 their own search doesn't support (e.g. "cables >=40Gbps AND >=100W under $80").
 
-Architecture B: orchestration in chat. Claude drives the browser (via Playwright
-MCP or similar), passes extractor JSON to pbtech_scrape for normalization and
-storage, then queries via pbtech_query with arbitrary SQL.
-
 Run: python server.py (stdio transport for Claude Desktop)
 """
 
 import json
 import logging
-from mcp.server.fastmcp import FastMCP
+from contextlib import asynccontextmanager
+from fastmcp import FastMCP
+from fetcher import close_browser
 
 from db import get_connection, upsert_product, run_query, format_query_result
 from db import reset_db, session_stats
@@ -22,31 +20,40 @@ from normalizer import normalize_product, spec_coverage, needs_llm, apply_llm_fa
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("pbtech-shopping")
 
-mcp = FastMCP("pbtech-shopping")
+
+@asynccontextmanager
+async def _lifespan(server):
+    yield
+    await close_browser()
+
+
+mcp = FastMCP("pbtech-shopping", lifespan=_lifespan)
 
 @mcp.tool()
-def pbtech_scrape(category_url: str, extractor_json: str) -> str:
-    """Normalize and store PB Tech product data from the JS extractor output.
+async def pbtech_scrape(category_url: str, extractor_json: str = "") -> str:
+    """Normalize and store PB Tech product data.
 
-    Workflow: (1) navigate to any page on www.pbtech.co.nz via Playwright MCP
-    (warms Cloudflare and PHPSESSID cookies), (2) run pbtech-fetch-category.js
-    via browser_run_code or browser_evaluate — this fetches the full listing
-    in one POST and returns structured JSON, (3) pass the resulting JSON
-    string here. This tool normalizes specs (regex, spec rows, standards
-    lookup, and LLM fallback for stragglers) and inserts into the session
-    SQLite database.
+    Two usage modes:
+    - URL-only (new): pbtech_scrape(category_url) — fetches the category
+      internally using a headless patchright browser. No Playwright MCP
+      required.
+    - Manual (legacy/testing): pbtech_scrape(category_url, extractor_json)
+      — accepts pre-extracted JSON string from pbtech-fetch-category.js.
+      Useful for debugging or if the internal browser fails.
 
     Args:
-        category_url: The PB Tech category URL that was scraped (used for
-            category detection: cables, monitors, etc.)
-        extractor_json: Raw JSON string output from pbtech-fetch-category.js.
-            Expected shape: {url, count, products: [{part, title, subtitle,
-            url, price_nzd_inc_gst, specs: {}}], spec_fields_seen: []}
+        category_url: The PB Tech category URL to scrape.
+        extractor_json: Optional. If empty (default), the category is
+            fetched internally. If provided, used as-is (legacy path).
     """
-    try:
-        data = json.loads(extractor_json)
-    except json.JSONDecodeError as e:
-        return f"ERROR: Invalid JSON — {e}"
+    if not extractor_json:
+        from fetcher import fetch_category
+        data = await fetch_category(category_url)
+    else:
+        try:
+            data = json.loads(extractor_json)
+        except json.JSONDecodeError as e:
+            return f"ERROR: Invalid JSON — {e}"
 
     if "error" in data:
         return f"Extractor error: {data['error']}"
