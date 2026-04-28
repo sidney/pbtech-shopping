@@ -122,9 +122,10 @@ PB Tech's catalog pages have a few non-obvious quirks worth knowing:
 - **Inc-GST is the second `.full-price` per card.** First is ex-GST, which
   is what NZ business buyers see. Almost always you want the inc-GST
   headline price. The fetch helper already picks the second.
-- **Server-rendered HTML, no public JSON API.** The `ajax_product_collection_view_pdo.php`
-  endpoint the fetch helper calls returns a JSON envelope whose `content`
-  field is HTML — we parse that HTML in a detached DOMParser document.
+- **Server-rendered HTML, no public JSON API.** Products are in the initial
+  `/shop-all` page HTML. The fetch helper GETs that URL after priming the
+  session page-size via `toggle_records_pdo.php`, then parses the response
+  in a detached DOMParser document.
 - **Cloudflare-clean from a residential Mac IP.** Validated 2026-04-15:
   PB Tech's WAF does not challenge a Playwright-driven Chromium running on
   a residential connection. If this changes (datacenter VPN, etc.), expect
@@ -288,10 +289,9 @@ If PB Tech redesigns and the extractor returns `count: 0` with the "no
 3. Update the selectors in `pbtech-fetch-category.js` (and `extractor.js`
    if you want the legacy fallback to keep working).
 
-The same recovery applies if the AJAX endpoint contract changes — the
-endpoint URL, payload shape, or response envelope structure are all
-observable by dismissing the "Items per page" dropdown in DevTools and
-watching `/code/ajax_product_collection_view_pdo.php` in the Network tab.
+The same recovery applies if the fetch contract changes — navigate to a
+known-good category, open DevTools Network tab, and observe what request
+actually loads the product grid.
 
 ## v0 limitations
 
@@ -309,9 +309,9 @@ watching `/code/ajax_product_collection_view_pdo.php` in the Network tab.
 - [x] Step 1: SQLite schema + three tool stubs
 - [x] Step 2: Test normalizer against real PB Tech extractor output
 - [x] Step 3: LLM fallback via gpt-4o-mini (OpenRouter)
-- [x] Step 4: Pagination convenience — solved via single-POST mechanism
-  (`toggle_records_pdo.php` + `ajax_product_collection_view_pdo.php`) in
-  `pbtech-fetch-category.js`. Replaces the earlier multi-page plan.
+- [x] Step 4: Pagination convenience — solved via `toggle_records_pdo.php`
+  (set page size to 9999) + GET `/shop-all` (server-rendered full listing).
+  Replaces the earlier multi-page plan.
 - [x] Step 5: First real shopping session (external SSD for MacBook M5 Pro,
   2026-04-24). Surfaced two bugs, both fixed: the popup-suppression timing
   gap (fixed by adding `pbtech-prime-browser.js`) and the stage-1 regex
